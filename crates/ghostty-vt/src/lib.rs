@@ -3,6 +3,8 @@
 use std::ffi::c_void;
 use std::ptr;
 
+mod kitty;
+
 mod ffi {
     use std::ffi::c_void;
 
@@ -418,8 +420,11 @@ impl Terminal {
             set(ffi::OPT_PROGRAM_STATUS, on_program_status as *const c_void);
             set(ffi::OPT_TITLE_CHANGED, on_title_changed as *const c_void);
         }
+        kitty::enable(raw);
         let mut term = term;
         term.set_display(Some(DEFAULT_FG), Some(DEFAULT_BG), Some(DEFAULT_FG), None);
+        let (cols, rows) = term.size();
+        term.resize(cols, rows); // the default cell size, until a viewer tells us its own
         term
     }
 
@@ -575,8 +580,13 @@ impl Terminal {
         if let Some([r, g, b]) = bg {
             self.hooks.dark = (r as u32 * 299 + g as u32 * 587 + b as u32 * 114) / 1000 < 128;
         }
-        if let Some(cell) = cell {
+        if let Some(cell) = cell
+            && cell != self.hooks.cell
+        {
             self.hooks.cell = cell;
+            // Image placements are measured in cells of this size.
+            let (cols, rows) = self.size();
+            self.resize(cols, rows);
         }
         if changed && self.dec_mode(2031) {
             let mut buf = [0u8; 16];
@@ -727,6 +737,7 @@ impl Terminal {
             // Synchronized output belongs to the old viewer and would freeze a new one.
             out.extend(strip(&screen, &[b"\x1b[?2026h", b"\x1b[?47h", b"\x1b[?1047h", b"\x1b[?1049h"]));
         }
+        out.extend(self.kitty_repaint());
         let title = self.title();
         if !title.is_empty() {
             out.extend(format!("\x1b]2;{title}\x1b\\").as_bytes());
