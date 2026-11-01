@@ -135,6 +135,30 @@ fn hello_switches_to_framed_mode() {
 }
 
 #[test]
+fn hello_can_compress_a_framed_connection_both_ways() {
+    let s = Session::new();
+    s.json(&["server", "start"]);
+    let mut conn = s.connect();
+    let hello = conn.call(1, "hello", json!({"framed": true, "compress": ["lz4", "zstd"]}));
+    assert_eq!(hello["result"]["compress"], "zstd");
+
+    let mut out = zstd::stream::write::Encoder::new(conn.writer, 3).unwrap();
+    let req = json!({"jsonrpc": "2.0", "id": 2, "method": "server.status"});
+    out.write_all(&wire::encode(0, wire::DATA, req.to_string().as_bytes())).unwrap();
+    out.flush().unwrap();
+    let mut back = zstd::stream::read::Decoder::with_buffer(conn.reader).unwrap();
+    let (_, _, payload) = read_frame(&mut back);
+    let reply: Value = serde_json::from_slice(&payload).unwrap();
+    assert!(reply["result"]["pid"].is_number(), "{reply}");
+
+    // Turned off here: the caller hears none, and goes on uncompressed.
+    std::fs::create_dir_all(s.root.join("config/herdr-core")).unwrap();
+    std::fs::write(s.root.join("config/herdr-core/config.toml"), "[link]\ncompression = \"none\"\n").unwrap();
+    let hello = s.connect().call(1, "hello", json!({"framed": true, "compress": ["zstd"]}));
+    assert!(hello["result"].get("compress").is_none(), "{hello}");
+}
+
+#[test]
 fn connect_carries_the_protocol_over_stdio() {
     let s = Session::new();
     let mut child = s.cmd().arg("connect").stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();

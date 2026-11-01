@@ -36,7 +36,7 @@ env:
 
 jobs:
   # Fast formatting/advisory checks and Windows clippy from Linux
-  # (zig stubbed: type-checking needs no libghostty-vt).
+  # (zig and the C compiler stubbed: type-checking needs no libghostty-vt or zstd).
   lint:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -63,6 +63,8 @@ jobs:
       - run: cargo clippy --locked --target x86_64-pc-windows-msvc --all-targets -- -D warnings
         env:
           ZIG: ${{ github.workspace }}/scripts/zig-stub.sh
+          CC_x86_64_pc_windows_msvc: ${{ github.workspace }}/scripts/cc-stub.sh
+          AR_x86_64_pc_windows_msvc: ${{ github.workspace }}/scripts/cc-stub.sh
 
   test:
     strategy:
@@ -97,6 +99,11 @@ jobs:
           cache-workspace-crates: true
           cache-bin: false
           save-if: ${{ env.SAVE_CACHES }}
+      # zstd's C source needs a musl C compiler: cc finds musl-gcc.
+      - if: matrix.os == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools
       - run: cargo clippy --locked --target ${{ matrix.target }} --all-targets -- -D warnings
       # Windows' own ConPTY swallows answers to programs: hc ships Microsoft's.
       - if: matrix.os == 'windows'

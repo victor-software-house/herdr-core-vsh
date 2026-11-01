@@ -7,6 +7,8 @@ use crate::machines::Machine;
 use crate::rpc::RpcError;
 use crate::runtime::{Core, State, now_ms};
 use crate::wire::{self, Conn};
+use async_compression::Level;
+use async_compression::tokio::{bufread::ZstdDecoder, write::ZstdEncoder};
 use schemars::JsonSchema;
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -243,7 +245,8 @@ async fn supervise(core: Arc<Core>, id: String) {
             st.lines.insert(id.clone(), state);
             core.changed.notify_waiters();
         };
-        let hello = json!({"framed": true, "core": core.info, "calls_you": m.name});
+        let compress: Vec<&str> = core.link().map(|_| "zstd").into_iter().collect();
+        let hello = json!({"framed": true, "core": core.info, "calls_you": m.name, "compress": compress});
         match crate::machines::dial(&core.paths, m.reach(), m.session.as_deref(), hello).await {
             Ok(d) if d.hello["core"]["id"] != m.id.as_str() => {
                 down(&mut core.lock(), format!("a different core answers there ({})", d.hello["core"]["id"]));
@@ -335,10 +338,27 @@ async fn hold(core: &Arc<Core>, m: &Machine, mut d: crate::machines::Dialed) {
     let id = line.next.fetch_add(1, Ordering::Relaxed);
     lock(&line.mirror).0 = id;
     line.message(&json!({"jsonrpc": "2.0", "id": id, "method": "events.subscribe", "params": {}}));
-    let mut stdin = d.stdin;
+    // Compressed both ways when the core there agreed to it in its hello.
+    let zstd = d.hello["compress"] == "zstd";
+    let mut stdin: Box<dyn tokio::io::AsyncWrite + Unpin + Send> = match zstd {
+        true => {
+            let level = Level::Precise(core.link().unwrap_or(crate::config::LINK_LEVEL));
+            Box::new(ZstdEncoder::with_quality(d.stdin, level))
+        }
+        false => Box::new(d.stdin),
+    };
     let writer = tokio::spawn(async move {
         while let Some(frame) = out.recv().await {
             if stdin.write_all(&frame).await.is_err() {
+                return;
+            }
+            // What was queued meanwhile goes in the same flush.
+            while let Ok(frame) = out.try_recv() {
+                if stdin.write_all(&frame).await.is_err() {
+                    return;
+                }
+            }
+            if stdin.flush().await.is_err() {
                 return;
             }
         }
@@ -351,7 +371,11 @@ async fn hold(core: &Arc<Core>, m: &Machine, mut d: crate::machines::Dialed) {
         + crate::server::heartbeat_every();
     // Silence is no bytes at all: a big frame on a slow link keeps flowing.
     let heard = wire::Heard::default();
-    let mut stdout = heard.watch(&mut d.stdout);
+    let watched = heard.watch(&mut d.stdout);
+    let mut stdout: Box<dyn tokio::io::AsyncRead + Unpin + Send + '_> = match zstd {
+        true => Box::new(ZstdDecoder::new(tokio::io::BufReader::new(watched))),
+        false => Box::new(watched),
+    };
     loop {
         let (channel, kind, payload) = tokio::select! {
             frame = wire::read_frame(&mut stdout) => match frame {

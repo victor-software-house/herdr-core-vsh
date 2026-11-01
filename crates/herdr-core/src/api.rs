@@ -180,6 +180,7 @@ async fn hello(core: Ctx<'_>, p: HelloParams) -> Result<HelloResult, RpcError> {
         framed: p.framed,
         methods: METHOD_NAMES.iter().map(|m| m.to_string()).collect(),
         features: FEATURES.iter().map(|f| f.to_string()).collect(),
+        compress: (p.framed && p.compress.iter().any(|c| c == "zstd") && core.link().is_some()).then(|| "zstd".into()),
     })
 }
 

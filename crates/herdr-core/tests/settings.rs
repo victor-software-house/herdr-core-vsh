@@ -37,6 +37,11 @@ fn headless_size_and_history_come_from_config() {
     let (code, err) = s.err(&["run", "--bg", "true"]);
     assert_eq!((code, err["error"]["kind"].as_str()), (8, Some("config")));
     assert!(err["error"]["message"].as_str().unwrap().contains("images.scale"), "{err}");
+
+    config(&s, "[link]\nlevel = 40\n");
+    let (code, err) = s.err(&["run", "--bg", "true"]);
+    assert_eq!((code, err["error"]["kind"].as_str()), (8, Some("config")));
+    assert!(err["error"]["message"].as_str().unwrap().contains("link.level"), "{err}");
 }
 
 #[test]

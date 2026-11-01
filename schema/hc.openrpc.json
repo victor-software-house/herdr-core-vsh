@@ -295,6 +295,13 @@
       },
       "HelloResult": {
         "properties": {
+          "compress": {
+            "description": "The compression both sides use after this reply (`zstd`), if any: one\nstream each way, flushed whenever its sender has nothing more queued.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "core": {
             "$ref": "#/components/schemas/CoreInfo"
           },
@@ -1416,6 +1423,19 @@
               "string",
               "null"
             ]
+          }
+        },
+        {
+          "description": "Framed only: compression the caller can take both ways after the\nreply, in its order of preference. This core knows `zstd`.",
+          "name": "compress",
+          "required": false,
+          "schema": {
+            "default": [],
+            "description": "Framed only: compression the caller can take both ways after the\nreply, in its order of preference. This core knows `zstd`.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           }
         },
         {
