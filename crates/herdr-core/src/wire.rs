@@ -144,6 +144,9 @@ impl Conn {
 
 struct Stream {
     pending: VecDeque<u8>,
+    /// Bytes at the front of `pending` from a push larger than the cap (a
+    /// repaint with images): not counted against it until they are out.
+    repaint: usize,
     credit: usize,
     /// The program ended: CLOSE (with this reason) once `pending` is out.
     ending: Option<Vec<u8>>,
@@ -176,7 +179,7 @@ impl Outbox {
     }
 
     pub fn open(&mut self, channel: u32) {
-        self.streams.insert(channel, Stream { pending: VecDeque::new(), credit: WINDOW, ending: None });
+        self.streams.insert(channel, Stream { pending: VecDeque::new(), repaint: 0, credit: WINDOW, ending: None });
     }
 
     /// Ends a stream now (the viewer detached): whatever is queued is dropped.
@@ -195,11 +198,17 @@ impl Outbox {
     }
 
     /// Queues stream output. Returns false (and drops the backlog) when the
-    /// viewer is too far behind: the caller replaces it with a repaint.
+    /// viewer is too far behind: the caller replaces it with a repaint. An
+    /// empty backlog takes any one push whole, and output after it counts
+    /// against the cap only once it is out, so a repaint (images can make it
+    /// larger than the cap) is neither dropped nor cut short by what follows.
     pub fn data(&mut self, channel: u32, bytes: &[u8]) -> bool {
         let Some(s) = self.streams.get_mut(&channel) else { return true };
-        if s.pending.len() + bytes.len() > MAX_PENDING {
+        if s.pending.is_empty() {
+            s.repaint = if bytes.len() > MAX_PENDING { bytes.len() } else { 0 };
+        } else if s.pending.len() - s.repaint + bytes.len() > MAX_PENDING {
             s.pending.clear();
+            s.repaint = 0;
             return false;
         }
         s.pending.extend(bytes);
@@ -246,6 +255,7 @@ impl Outbox {
         let s = self.streams.get_mut(&channel).expect("ready stream");
         let n = s.pending.len().min(s.credit).min(CHUNK);
         s.credit -= n;
+        s.repaint = s.repaint.saturating_sub(n);
         let chunk: Vec<u8> = s.pending.drain(..n).collect();
         Some(encode(channel, DATA, &chunk))
     }
@@ -348,7 +358,12 @@ mod tests {
         let second = out.next_frame().unwrap();
         assert_ne!(first[..4], second[..4]);
 
-        // Too far behind: the backlog is dropped so the caller can repaint.
+        // Too far behind: the backlog is dropped so the caller can repaint,
+        // and the repaint goes whole even when it is larger than the cap.
         assert!(!out.data(1, &vec![b'b'; MAX_PENDING]));
+        assert!(out.data(1, &vec![b'c'; MAX_PENDING + 1]));
+        // Output behind that repaint is not "behind" until the cap past it.
+        assert!(out.data(1, &vec![b'd'; MAX_PENDING - 1]));
+        assert!(!out.data(1, b"de"));
     }
 }

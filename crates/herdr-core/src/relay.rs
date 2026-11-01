@@ -2,8 +2,11 @@
 //! Every byte reaches the screen. Viewers get every byte too, except queries
 //! the screen answered itself: a viewer seeing them would answer a second time.
 //! Images (APC: kitty graphics) are the other way round: the screen takes
-//! them (they move the cursor) but its replies are dropped, since it can't
-//! show them; a viewer that can answers.
+//! them (they move the cursor, and it keeps them for viewers that attach
+//! later) but its replies are dropped; a viewer that shows them answers.
+//! An image named by file, temporary file or shared memory reaches viewers
+//! as the pixels the screen loaded: a viewer elsewhere can't open the name,
+//! and the screen deletes a temporary file once it has read it.
 
 use ghostty_vt::Terminal as Screen;
 
@@ -12,6 +15,8 @@ const BEL: u8 = 0x07;
 /// Queries are short; anything longer is passed through unexamined.
 const MAX_CSI: usize = 64;
 const MAX_STRING: usize = 512;
+/// A file or shared memory name is short; longer is image data after all.
+const MAX_NAME: usize = 8 * MAX_STRING;
 
 #[derive(Default)]
 pub struct Relay {
@@ -19,9 +24,18 @@ pub struct Relay {
     held: Vec<u8>,
     /// Inside an APC: how many reply bytes were waiting when it began.
     apc: Option<usize>,
+    /// An APC kept back from viewers (from `ESC _`) until its keys show
+    /// whether it is an image named by file or shared memory, and while it is.
+    image: Option<Image>,
     /// The program's latest win32-input-mode request (DEC 9001, ConPTY's ask
     /// for key events), until taken. The screen doesn't keep it.
     pub win32_input: Option<bool>,
+}
+
+#[derive(Default)]
+struct Image {
+    bytes: Vec<u8>,
+    named: bool,
 }
 
 enum Seq {
@@ -58,7 +72,7 @@ impl Relay {
         for (i, &b) in input.iter().enumerate() {
             if self.held.is_empty() {
                 if b == ESC {
-                    pass(screen, &mut out, &input[run..i]);
+                    self.pass(screen, &mut out, &input[run..i]);
                     self.held.push(b);
                 }
                 continue;
@@ -66,6 +80,22 @@ impl Relay {
             self.held.push(b);
             if let Seq::Done { maybe_query } = self.judge() {
                 let seq = std::mem::take(&mut self.held);
+                if seq == b"\x1b\\" && self.image.as_ref().is_some_and(|image| image.named) {
+                    let image = self.image.take().expect("named image");
+                    screen.write(&seq);
+                    let control = image.bytes[2..].split(|b| *b == b';').next().unwrap_or_default();
+                    match screen.kitty_as_pixels(control) {
+                        Some(pixels) => out.extend(pixels),
+                        None => out.extend(image.bytes.iter().chain(&seq)),
+                    }
+                    if let Some(keep) = self.apc.take() {
+                        screen.drop_responses_after(keep);
+                    }
+                    run = i + 1;
+                    continue;
+                }
+                // Any other sequence ends a kept-back APC (ST, or ESC aborting it).
+                self.release(&mut out);
                 if maybe_query {
                     let before = screen.pending_responses();
                     screen.write(&seq);
@@ -78,8 +108,9 @@ impl Relay {
                     }
                     if seq == b"\x1b_" {
                         self.apc = Some(screen.pending_responses());
+                        self.image = Some(Image::default());
                     }
-                    pass(screen, &mut out, &seq);
+                    self.pass(screen, &mut out, &seq);
                     // An APC ends with ST; whatever the screen answered to it goes.
                     if seq == b"\x1b\\"
                         && let Some(keep) = self.apc.take()
@@ -91,14 +122,52 @@ impl Relay {
             }
         }
         if self.held.is_empty() {
-            pass(screen, &mut out, &input[run..]);
+            self.pass(screen, &mut out, &input[run..]);
         }
         out
+    }
+
+    /// Program bytes between escape sequences: to the screen, and to viewers
+    /// unless an APC is being kept back.
+    fn pass(&mut self, screen: &mut Screen, out: &mut Vec<u8>, bytes: &[u8]) {
+        if bytes.is_empty() {
+            return;
+        }
+        screen.write(bytes);
+        let Some(image) = &mut self.image else {
+            out.extend_from_slice(bytes);
+            return;
+        };
+        image.bytes.extend_from_slice(bytes);
+        let body = &image.bytes[2..];
+        let keep = if image.named {
+            body.len() <= MAX_NAME
+        } else {
+            match body.iter().position(|b| *b == b';') {
+                Some(n) => {
+                    image.named = names_its_image(&body[..n]);
+                    image.named
+                }
+                None => body.len() <= MAX_STRING && body.first().is_none_or(|b| *b == b'G'),
+            }
+        };
+        if !keep {
+            self.release(out);
+        }
+    }
+
+    /// Sends a kept-back APC on as it came.
+    fn release(&mut self, out: &mut Vec<u8>) {
+        if let Some(image) = self.image.take() {
+            out.extend(image.bytes);
+        }
     }
 
     /// A viewer missed a sequence too large to replay. Consume just its tail,
     /// capturing a repaint at ground even if this read also starts another image.
     pub fn feed_to_ground(&mut self, screen: &mut Screen, input: &[u8]) -> (Vec<u8>, Option<(usize, Vec<u8>)>) {
+        // The viewer is repainted at ground; what was kept back from it is moot.
+        self.image = None;
         let mut bytes = std::mem::take(&mut self.held);
         bytes.extend_from_slice(input);
         let Some(n) = screen.write_until_ground(&bytes) else {
@@ -159,11 +228,12 @@ fn win32_input(seq: &[u8]) -> Option<bool> {
     params.split(|b| *b == b';').any(|p| p == b"9001").then_some(on)
 }
 
-fn pass(screen: &mut Screen, out: &mut Vec<u8>, bytes: &[u8]) {
-    if !bytes.is_empty() {
-        screen.write(bytes);
-        out.extend_from_slice(bytes);
-    }
+/// A kitty image transmission by file (`t=f`), temporary file (`t=t`) or
+/// shared memory (`t=s`), from its control keys (`G…`).
+fn names_its_image(control: &[u8]) -> bool {
+    control
+        .strip_prefix(b"G")
+        .is_some_and(|keys| keys.split(|b| *b == b',').any(|kv| matches!(kv, b"t=f" | b"t=t" | b"t=s")))
 }
 
 #[cfg(test)]
@@ -224,6 +294,30 @@ mod tests {
             let replies = String::from_utf8_lossy(&screen.take_responses()).into_owned();
             assert!(replies.ends_with('R') && !replies.contains("_G"), "only the cursor report: {replies:?}");
         }
+    }
+
+    #[test]
+    fn images_named_by_file_reach_viewers_as_pixels() {
+        let file = std::env::temp_dir().join(format!("hc-relay-{}.rgb", std::process::id()));
+        std::fs::write(&file, [1, 2, 3]).unwrap();
+        let name = crate::put::encode(file.to_string_lossy().as_bytes());
+        for split in [false, true] {
+            let mut screen = Screen::new(80, 24, 1 << 20);
+            let mut relay = Relay::default();
+            let input = format!("a\x1b_Ga=T,i=5,t=f,f=24,s=1,v=1;{name}\x1b\\b");
+            let input = input.as_bytes();
+            let out =
+                if split { feed_bytewise(&mut relay, &mut screen, input) } else { relay.feed(&mut screen, input) };
+            let shown = String::from_utf8_lossy(&out).into_owned();
+            assert!(shown.starts_with("a\x1b_Gt=d,f=100,a=T,i=5,m=0;") && shown.ends_with("\x1b\\b"), "{shown:?}");
+            assert!(!shown.contains(&name), "the name stays here");
+            assert!(screen.take_responses().is_empty(), "the viewer answers");
+            // A viewer that took the PNG keeps the image, as the core does.
+            let mut viewer = Screen::new(80, 24, 1 << 20);
+            viewer.write(&out);
+            assert!(String::from_utf8_lossy(&viewer.paint(0)).contains("a=t,i=5,f=100"), "split={split}");
+        }
+        std::fs::remove_file(&file).unwrap();
     }
 
     #[test]
