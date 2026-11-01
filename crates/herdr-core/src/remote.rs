@@ -746,7 +746,11 @@ pub fn conn_key(conn: &Arc<Conn>) -> usize {
 pub async fn attach(core: &Core, conn: &Arc<Conn>, m: &Machine, params: Value) -> Result<Value, RpcError> {
     let line = line(core, m).await?;
     let here = conn.new_channel();
-    conn.with(|out| out.open(here));
+    let limit = core.settings().viewer_queue_bytes();
+    conn.with(|out| {
+        out.open(here);
+        out.set_limit(here, limit);
+    });
     let deadline = deadline_for(core, "terminal.attach", &params);
     match line.call_into(&m.name, "terminal.attach", params.clone(), Some((conn.clone(), here)), deadline).await {
         Ok(mut r) => {

@@ -27,6 +27,24 @@ pub struct Config {
     /// timeout on top), and to send anything at all before its line is
     /// given up and dialed again (default 30).
     pub machine_timeout: Option<f64>,
+    /// Output kept for a viewer that stops reading before it gets a repaint
+    /// instead, in MB (default 4).
+    pub viewer_queue_mb: Option<f64>,
+    /// Kitty images: what each terminal keeps, and how viewers get them.
+    #[serde(default)]
+    pub images: Images,
+}
+
+#[derive(Deserialize, Default)]
+pub struct Images {
+    /// Image memory each screen keeps, in MB (default 320, as Ghostty).
+    pub storage_mb: Option<f64>,
+    /// "display" (default): a repaint sends each image no larger than it is
+    /// drawn, in the viewer's pixels. "original": always full resolution.
+    pub scale: Option<String>,
+    /// PNG compression of images sent to viewers: "fastest", "fast"
+    /// (default), "balanced" or "high".
+    pub png: Option<String>,
 }
 
 impl Config {
@@ -52,6 +70,38 @@ impl Config {
 
     pub fn history_bytes(&self) -> usize {
         (self.history_mb.unwrap_or(5.0).max(0.0) * 1024.0 * 1024.0) as usize
+    }
+
+    pub fn viewer_queue_bytes(&self) -> usize {
+        let mb = self.viewer_queue_mb.filter(|mb| mb.is_finite() && *mb > 0.0).unwrap_or(4.0);
+        (mb * 1024.0 * 1024.0) as usize
+    }
+
+    pub fn images(&self) -> Result<ghostty_vt::ImageSettings, RpcError> {
+        let defaults = ghostty_vt::ImageSettings::default();
+        let i = &self.images;
+        let storage_bytes = match i.storage_mb {
+            None => defaults.storage_bytes,
+            Some(mb) if mb.is_finite() && mb > 0.0 => (mb * 1024.0 * 1024.0) as u64,
+            Some(mb) => return Err(invalid(format!("images.storage_mb {mb}: give a size above 0, like 320"))),
+        };
+        let scale_to_display = match i.scale.as_deref() {
+            None | Some("display") => true,
+            Some("original") => false,
+            Some(other) => return Err(invalid(format!("images.scale {other:?}: use \"display\" or \"original\""))),
+        };
+        let png = match i.png.as_deref() {
+            None | Some("fast") => ghostty_vt::PngLevel::Fast,
+            Some("fastest") => ghostty_vt::PngLevel::Fastest,
+            Some("balanced") => ghostty_vt::PngLevel::Balanced,
+            Some("high") => ghostty_vt::PngLevel::High,
+            Some(other) => {
+                return Err(invalid(format!(
+                    "images.png {other:?}: use \"fastest\", \"fast\", \"balanced\" or \"high\""
+                )));
+            }
+        };
+        Ok(ghostty_vt::ImageSettings { storage_bytes, scale_to_display, png })
     }
 }
 

@@ -32,6 +32,11 @@ fn headless_size_and_history_come_from_config() {
     config(&s, "headless = \"wide\"\n");
     let (code, err) = s.err(&["run", "--bg", "true"]);
     assert_eq!((code, err["error"]["kind"].as_str()), (8, Some("config")));
+
+    config(&s, "[images]\nscale = \"big\"\n");
+    let (code, err) = s.err(&["run", "--bg", "true"]);
+    assert_eq!((code, err["error"]["kind"].as_str()), (8, Some("config")));
+    assert!(err["error"]["message"].as_str().unwrap().contains("images.scale"), "{err}");
 }
 
 #[test]

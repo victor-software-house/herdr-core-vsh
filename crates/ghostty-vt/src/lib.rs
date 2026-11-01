@@ -3,6 +3,10 @@
 use std::ffi::c_void;
 use std::ptr;
 
+mod kitty;
+
+pub use kitty::{ImageSettings, PngLevel};
+
 mod ffi {
     use std::ffi::c_void;
 
@@ -309,7 +313,14 @@ struct Hooks {
 pub struct Terminal {
     raw: ffi::Terminal,
     hooks: Box<Hooks>,
+    /// Each kept image as viewers get it (base64 PNG), by id, with the
+    /// generation it was made from: repaints come often, encoding is slow.
+    sent_images: std::cell::RefCell<SentImages>,
+    images: ImageSettings,
 }
+
+/// Image id → (generation, size sent, base64 PNG).
+type SentImages = std::collections::HashMap<u32, (u64, (u32, u32), std::sync::Arc<Vec<u8>>)>;
 
 // The handle is only touched through `&mut self` / `&self`; libghostty keeps no thread state.
 unsafe impl Send for Terminal {}
@@ -402,7 +413,7 @@ impl Terminal {
             cell: DEFAULT_CELL,
             dark: true,
         });
-        let term = Terminal { raw, hooks };
+        let term = Terminal { raw, hooks, sent_images: Default::default(), images: ImageSettings::default() };
         let ud: *const Hooks = &*term.hooks;
         let continuation = CONTINUATION_MAX_BYTES;
         unsafe {
@@ -418,8 +429,11 @@ impl Terminal {
             set(ffi::OPT_PROGRAM_STATUS, on_program_status as *const c_void);
             set(ffi::OPT_TITLE_CHANGED, on_title_changed as *const c_void);
         }
+        kitty::enable(raw);
         let mut term = term;
         term.set_display(Some(DEFAULT_FG), Some(DEFAULT_BG), Some(DEFAULT_FG), None);
+        let (cols, rows) = term.size();
+        term.resize(cols, rows); // the default cell size, until a viewer tells us its own
         term
     }
 
@@ -575,8 +589,13 @@ impl Terminal {
         if let Some([r, g, b]) = bg {
             self.hooks.dark = (r as u32 * 299 + g as u32 * 587 + b as u32 * 114) / 1000 < 128;
         }
-        if let Some(cell) = cell {
+        if let Some(cell) = cell
+            && cell != self.hooks.cell
+        {
             self.hooks.cell = cell;
+            // Image placements are measured in cells of this size.
+            let (cols, rows) = self.size();
+            self.resize(cols, rows);
         }
         if changed && self.dec_mode(2031) {
             let mut buf = [0u8; 16];
@@ -708,14 +727,26 @@ impl Terminal {
 \x1b[?1049l\x1b[?1047l\x1b[?47l\x1b[H\x1b[2J"
             .to_vec();
         let available = self.history_rows();
-        if history > 0 && available > 0 && !self.alt_screen() {
-            let from = available.saturating_sub(history as u32);
-            if let Some(sel) = self.select(ffi::POINT_HISTORY, (0, from), (last.0, available - 1)) {
-                out.extend(self.format(ffi::FORMAT_VT, Some(&sel), false));
-                // Push those lines up into the viewer's scrollback before painting the screen.
-                out.extend(b"\x1b[0m\r\n".iter().chain(&b"\n".repeat(rows as usize)));
-                out.extend(b"\x1b[H\x1b[2J");
+        let from = available.saturating_sub(history as u32);
+        let with_history = history > 0 && available > 0 && !self.alt_screen();
+        let images = self.kitty_repaint(with_history.then_some(from));
+        out.extend(&images.images);
+        if with_history {
+            // History in runs of lines, each image placed at the start of its line in between.
+            let mut start = from;
+            for (line, place) in &images.history {
+                let row = from + line;
+                if row > start {
+                    out.extend(self.history_lines(start, row - 1, last.0));
+                    out.extend(b"\x1b[0m\r\n");
+                    start = row;
+                }
+                out.extend(place);
             }
+            out.extend(self.history_lines(start, available - 1, last.0));
+            // Push those lines up into the viewer's scrollback before painting the screen.
+            out.extend(b"\x1b[0m\r\n".iter().chain(&b"\n".repeat(rows as usize)));
+            out.extend(b"\x1b[H\x1b[2J");
         }
         if self.alt_screen() {
             out.extend(b"\x1b[?1049h");
@@ -727,11 +758,19 @@ impl Terminal {
             // Synchronized output belongs to the old viewer and would freeze a new one.
             out.extend(strip(&screen, &[b"\x1b[?2026h", b"\x1b[?47h", b"\x1b[?1047h", b"\x1b[?1049h"]));
         }
+        out.extend(images.screen);
         let title = self.title();
         if !title.is_empty() {
             out.extend(format!("\x1b]2;{title}\x1b\\").as_bytes());
         }
         out
+    }
+
+    /// History rows `from..=to` as the escape sequences that write them.
+    fn history_lines(&self, from: u32, to: u32, last_col: u16) -> Vec<u8> {
+        self.select(ffi::POINT_HISTORY, (0, from), (last_col, to))
+            .map(|sel| self.format(ffi::FORMAT_VT, Some(&sel), false))
+            .unwrap_or_default()
     }
 
     /// Complete binary snapshot, including any half-received escape sequence.

@@ -204,6 +204,11 @@ impl Core {
         self.settings().history_bytes()
     }
 
+    /// How terminals keep kitty images and send them (a broken `[images]` means defaults).
+    pub fn images(&self) -> ghostty_vt::ImageSettings {
+        self.settings().images().unwrap_or_default()
+    }
+
     pub fn lock(&self) -> MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(|p| p.into_inner())
     }
@@ -414,6 +419,7 @@ impl Core {
                 .and_then(|bytes| Screen::restore(&bytes, self.history_bytes()));
             let exact = saved.is_some();
             let mut screen = saved.unwrap_or_else(|| Screen::new(h.cols, h.rows, self.history_bytes()));
+            screen.set_images(self.images());
             // Through a relay, like live output, so requests the screen doesn't keep are seen.
             let mut relay = Relay::default();
             relay.feed(&mut screen, &tail);
