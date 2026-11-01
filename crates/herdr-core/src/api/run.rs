@@ -96,6 +96,7 @@ pub(super) async fn start(
     let settings = crate::config::load(&core.paths.config)?;
     let (cols, rows) = settings.headless()?;
     settings.images()?;
+    settings.link()?;
     // A caller on another machine has no folder here: home, then.
     let from_afar = p.caller.as_deref().is_some_and(|c| c.contains('/'));
     let cwd = crate::exec::folder(p.cwd.as_deref(), from_afar);

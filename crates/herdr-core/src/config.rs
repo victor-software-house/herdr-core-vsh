@@ -33,6 +33,21 @@ pub struct Config {
     /// Kitty images: what each terminal keeps, and how viewers get them.
     #[serde(default)]
     pub images: Images,
+    /// Lines to other machines.
+    #[serde(default)]
+    pub link: Link,
+}
+
+/// The zstd level a line to another machine uses unless `link.level` says.
+pub const LINK_LEVEL: i32 = 3;
+
+#[derive(Deserialize, Default)]
+pub struct Link {
+    /// "zstd" (default): what goes either way on a line to another machine is
+    /// compressed, when the core there can. "none": sent as it is.
+    pub compression: Option<String>,
+    /// zstd level, 1 (fastest) to 19 (smallest); default 3.
+    pub level: Option<i32>,
 }
 
 #[derive(Deserialize, Default)]
@@ -102,6 +117,17 @@ impl Config {
             }
         };
         Ok(ghostty_vt::ImageSettings { storage_bytes, scale_to_display, png })
+    }
+
+    /// The zstd level lines to other machines use, or `None` for none.
+    pub fn link(&self) -> Result<Option<i32>, RpcError> {
+        match (self.link.compression.as_deref(), self.link.level) {
+            (Some("none"), _) => Ok(None),
+            (None | Some("zstd"), None) => Ok(Some(LINK_LEVEL)),
+            (None | Some("zstd"), Some(level @ 1..=19)) => Ok(Some(level)),
+            (None | Some("zstd"), Some(level)) => Err(invalid(format!("link.level {level}: use 1 to 19"))),
+            (Some(other), _) => Err(invalid(format!("link.compression {other:?}: use \"zstd\" or \"none\""))),
+        }
     }
 }
 

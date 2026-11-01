@@ -10,6 +10,7 @@ name = "herdr-core"
 path = "src/main.rs"
 
 [dependencies]
+async-compression = { version = "0.4", features = ["tokio", "zstd"] }
 clap = { version = "4", features = ["derive"] }
 ghostty-vt = { path = "../ghostty-vt" }
 schemars = "1"
@@ -43,6 +44,9 @@ windows-sys = { version = "0.61", features = [
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
+
+[dev-dependencies]
+zstd = "0.14"
 
 [lints]
 workspace = true
