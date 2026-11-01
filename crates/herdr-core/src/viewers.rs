@@ -78,8 +78,10 @@ impl Core {
         });
         self.apply_size(&mut st, id);
         let paint = first_paint(&st, id, req.history);
+        let limit = self.settings().viewer_queue_bytes();
         conn.with(|out| {
             out.open(channel);
+            out.set_limit(channel, limit);
             out.data(channel, &paint);
         });
         Ok(channel)

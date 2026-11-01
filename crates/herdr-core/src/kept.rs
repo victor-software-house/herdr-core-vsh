@@ -106,6 +106,7 @@ impl Core {
             t.paste_gap_ms = None;
             let spawn = proto::Spawn { argv: t.argv.clone(), env, cwd, cols: t.cols, rows: t.rows };
             let mut screen = ghostty_vt::Terminal::new(t.cols, t.rows, self.history_bytes());
+            screen.set_images(self.images());
             screen.set_xtversion(&t.identity);
             st.screens.insert(id, screen);
             // Claim and persist before sending: a slow holder never gets a second spawn.

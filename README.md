@@ -65,6 +65,29 @@ their behavior. A bad setting reports a config error; a shell that cannot start
 reports `spawn_failed`. Recovery stays pending and retries, with errors in
 `core.log` (config) or `holder.log` (spawn); it never silently falls back to another shell.
 
+## Images
+
+Kitty graphics images stay with the terminal: a viewer that attaches later,
+here or from another machine, gets them again with their placements, on screen
+and in the history it asks for. Images a program sends by file, temporary file
+or shared memory are loaded here and reach viewers as PNG, never as a path.
+They survive a restart of the core: its screen snapshots keep them.
+These settings in `config.toml` change how:
+
+```toml
+viewer_queue_mb = 4    # output kept for a viewer that stops reading, before it gets a repaint
+
+[images]
+storage_mb = 320       # image memory each terminal screen keeps
+scale = "display"      # repaints send each image as large as it is drawn; "original": full size
+png = "fast"           # PNG compression for viewers: "fastest", "fast", "balanced", "high"
+```
+
+`scale = "display"` uses the cell size the viewer reports, so an image is sent
+at the pixels it covers on that screen. Images a program sends while a viewer
+watches always go at full size. A bad value reports a config error when a
+terminal starts.
+
 ## Agents run agents
 
 Give an agent `hc --skill`. It prints the agent docs in one read, including how to delegate, wait, report back, and clean up.
@@ -123,7 +146,7 @@ For agents, use `hc --skill`.
 
 ## Build from source
 
-You need Rust, Zig 0.16, and just. CI pins the Rust version in [.github/workflows/ci.yml](.github/workflows/ci.yml).
+You need Rust, Zig 0.17, and just. CI pins the Rust version in [.github/workflows/ci.yml](.github/workflows/ci.yml).
 
 ```sh
 git submodule update --init --depth 1

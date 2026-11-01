@@ -204,6 +204,11 @@ impl Core {
         self.settings().history_bytes()
     }
 
+    /// How terminals keep kitty images and send them (a broken `[images]` means defaults).
+    pub fn images(&self) -> ghostty_vt::ImageSettings {
+        self.settings().images().unwrap_or_default()
+    }
+
     pub fn lock(&self) -> MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(|p| p.into_inner())
     }
@@ -408,12 +413,14 @@ impl Core {
             adopted.push(id);
             st.reg.terminals.get_mut(&id).expect("ours").holder = Some(instance.to_string());
             let tail = tails.remove(&id).unwrap_or_default();
+            let images = self.images();
             let saved = handover
                 .then(|| std::fs::read(self.snapshot_path(id)).ok())
                 .flatten()
-                .and_then(|bytes| Screen::restore(&bytes, self.history_bytes()));
+                .and_then(|bytes| Screen::restore(&bytes, self.history_bytes(), Some(images)));
             let exact = saved.is_some();
             let mut screen = saved.unwrap_or_else(|| Screen::new(h.cols, h.rows, self.history_bytes()));
+            screen.set_images(images);
             // Through a relay, like live output, so requests the screen doesn't keep are seen.
             let mut relay = Relay::default();
             relay.feed(&mut screen, &tail);
@@ -725,7 +732,7 @@ impl Core {
             Some(screen) => Some(screen.plain_text()),
             None => std::fs::read(self.snapshot_path(id))
                 .ok()
-                .and_then(|bytes| Screen::restore(&bytes, self.history_bytes()))
+                .and_then(|bytes| Screen::restore(&bytes, self.history_bytes(), None))
                 .map(|s| s.plain_text()),
         }
     }

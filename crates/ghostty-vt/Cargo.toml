@@ -7,5 +7,9 @@ license.workspace = true
 publish.workspace = true
 links = "ghostty-vt"
 
+[dependencies]
+# Decodes PNG images for the terminal's kitty image storage.
+png = "0.18.1"
+
 [lints]
 workspace = true
