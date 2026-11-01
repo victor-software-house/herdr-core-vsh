@@ -1,0 +1,23 @@
+min_version = "2026.10.1"
+
+[settings]
+experimental = true
+lockfile = true
+
+[env]
+FORK_MANIFEST = "patches/fork.yaml"
+
+[tools]
+# mbx (mr-boxington) wraps Cargo inside mise: one shared, deduplicated build
+# store and compiler pool for every checkout, instead of a full target/ each.
+# clippy and rustfmt: `just lint` needs both.
+rust = { version = "1.95.0", profile = "minimal", components = "clippy,rustfmt", mr_boxington = true }
+mr-boxington = "1.29.0"
+# The vendored Ghostty builds with Zig 0.16 (ci.yml, crates/ghostty-vt/build.rs).
+zig = "0.16.0"
+"cargo:stgit" = { version = "2.6.1", depends = ["rust"] }
+
+[task_config]
+includes = [
+  "git::https://github.com/victor-software-house/forkctl.git//tasks/fork?ref=v0.0.47",
+]
