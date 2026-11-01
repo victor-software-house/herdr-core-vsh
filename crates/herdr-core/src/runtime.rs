@@ -209,6 +209,11 @@ impl Core {
         self.settings().images().unwrap_or_default()
     }
 
+    /// The zstd level of lines to other machines, `None` for none (a broken `[link]` means defaults).
+    pub fn link(&self) -> Option<i32> {
+        self.settings().link().unwrap_or(Some(crate::config::LINK_LEVEL))
+    }
+
     pub fn lock(&self) -> MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(|p| p.into_inner())
     }

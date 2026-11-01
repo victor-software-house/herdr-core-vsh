@@ -107,6 +107,10 @@ pub struct HelloParams {
     pub core: Option<CoreInfo>,
     /// What that core calls this one (`rohan`), so news about `t7` reaches it as `rohan/t7`.
     pub calls_you: Option<String>,
+    /// Framed only: compression the caller can take both ways after the
+    /// reply, in its order of preference. This core knows `zstd`.
+    #[serde(default)]
+    pub compress: Vec<String>,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -117,6 +121,10 @@ pub struct HelloResult {
     pub framed: bool,
     pub methods: Vec<String>,
     pub features: Vec<String>,
+    /// The compression both sides use after this reply (`zstd`), if any: one
+    /// stream each way, flushed whenever its sender has nothing more queued.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compress: Option<String>,
 }
 
 #[derive(Serialize, JsonSchema, Clone)]

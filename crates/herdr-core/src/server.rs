@@ -11,6 +11,8 @@ use serde_json::Value;
 use std::io;
 use std::path::Path;
 use std::sync::Arc;
+use async_compression::Level;
+use async_compression::tokio::{bufread::ZstdDecoder, write::ZstdEncoder};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 type Reader = BufReader<platform::AsyncRead>;
@@ -133,6 +135,7 @@ async fn connection(core: Arc<Core>, read: platform::AsyncRead, mut write: Write
     let mut line = String::new();
     let plain = std::sync::Mutex::new(None);
     let mut ahead = Vec::new(); // what came while an exec ran
+    let mut zstd = false;
     loop {
         line.clear();
         match ahead.iter().position(|b| *b == b'\n') {
@@ -169,10 +172,21 @@ async fn connection(core: Arc<Core>, read: platform::AsyncRead, mut write: Write
             return plain_events(&core, sub, read, write).await;
         }
         if handled.framed {
+            zstd = handled.reply.as_ref().is_some_and(|r| r["result"]["compress"] == "zstd");
             break;
         }
     }
     let conn = Arc::new(Conn::default());
+    // Compressed both ways from here when the hello agreed to it.
+    type Read = Box<dyn tokio::io::AsyncRead + Unpin + Send>;
+    type Write = Box<dyn tokio::io::AsyncWrite + Unpin + Send>;
+    let (mut read, write): (Read, Write) = match zstd {
+        true => {
+            let level = Level::Precise(core.link().unwrap_or(crate::config::LINK_LEVEL));
+            (Box::new(ZstdDecoder::new(read)), Box::new(ZstdEncoder::with_quality(write, level)))
+        }
+        false => (Box::new(read), Box::new(write)),
+    };
     let mut writer = tokio::spawn(write_frames(conn.clone(), write));
     // Another core dialing in says who it is in its hello.
     let hello: Value = serde_json::from_str(&line).unwrap_or_default();
@@ -276,7 +290,7 @@ pub fn heartbeat(core: Arc<Core>, conn: Arc<Conn>, channel: u32) {
 }
 
 /// Sends whatever the outbox hands out: control first, then streams by credit.
-async fn write_frames(conn: Arc<Conn>, mut write: Writer) -> io::Result<()> {
+async fn write_frames(conn: Arc<Conn>, mut write: impl tokio::io::AsyncWrite + Unpin) -> io::Result<()> {
     loop {
         conn.wake.notified().await;
         loop {
@@ -286,10 +300,17 @@ async fn write_frames(conn: Arc<Conn>, mut write: Writer) -> io::Result<()> {
                 None => break,
             }
         }
+        // All that was queued goes out together: a compressed stream sends
+        // what it holds only when flushed.
+        write.flush().await?;
     }
 }
 
-async fn read_frames(core: &Arc<Core>, conn: &Arc<Conn>, read: &mut Reader) -> io::Result<()> {
+async fn read_frames(
+    core: &Arc<Core>,
+    conn: &Arc<Conn>,
+    read: &mut (impl tokio::io::AsyncRead + Unpin),
+) -> io::Result<()> {
     let u16_at = |p: &[u8], i: usize| u16::from_le_bytes([p[i], p[i + 1]]);
     // Execs running for this connection by request id: they end when it
     // closes, or when it gives up on one (`$/cancelRequest`).

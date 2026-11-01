@@ -77,6 +77,19 @@ Ctrl+\ leaves an attached terminal without ending its program.
 Remote paths start at the remote user's home unless you set a working directory.
 Local paths start at your current folder. Prefer explicit remote paths.
 
+## Compression
+
+What goes either way on the connection is compressed with zstd when the core there can take it.
+Each side keeps one stream for the life of the connection and flushes it whenever it has nothing more to send, so typing is not held back.
+Terminal text shrinks about threefold (a 31 KB build log sends 9 KB); images, already PNG, lose most of their base64 overhead.
+`[link]` in `config.toml` changes it on either side:
+
+```toml
+[link]
+compression = "zstd"   # or "none"
+level = 3              # 1 (fastest) to 19 (smallest)
+```
+
 ## Commands and files without a terminal
 
 Use exec for a short command whose exact output you need:
