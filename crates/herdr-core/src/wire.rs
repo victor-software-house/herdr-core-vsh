@@ -195,10 +195,12 @@ impl Outbox {
     }
 
     /// Queues stream output. Returns false (and drops the backlog) when the
-    /// viewer is too far behind: the caller replaces it with a repaint.
+    /// viewer is too far behind: the caller replaces it with a repaint. An
+    /// empty backlog takes any one push whole, so that repaint (images can
+    /// make it larger than the cap) is never what gets dropped.
     pub fn data(&mut self, channel: u32, bytes: &[u8]) -> bool {
         let Some(s) = self.streams.get_mut(&channel) else { return true };
-        if s.pending.len() + bytes.len() > MAX_PENDING {
+        if !s.pending.is_empty() && s.pending.len() + bytes.len() > MAX_PENDING {
             s.pending.clear();
             return false;
         }
@@ -348,7 +350,9 @@ mod tests {
         let second = out.next_frame().unwrap();
         assert_ne!(first[..4], second[..4]);
 
-        // Too far behind: the backlog is dropped so the caller can repaint.
+        // Too far behind: the backlog is dropped so the caller can repaint,
+        // and the repaint goes whole even when it is larger than the cap.
         assert!(!out.data(1, &vec![b'b'; MAX_PENDING]));
+        assert!(out.data(1, &vec![b'c'; MAX_PENDING + 1]));
     }
 }

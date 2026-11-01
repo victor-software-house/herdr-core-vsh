@@ -211,3 +211,84 @@ fn answers_queries_like_ghostty_with_viewer_facts() {
     assert_eq!(ask(&mut t, b"\x1b[?2004$p"), "\x1b[?2004;2$y");
     assert_eq!(ask(&mut t, b"\x1b[?u"), "\x1b[?0u");
 }
+
+fn b64(data: &[u8]) -> String {
+    String::from_utf8(kitty::base64(data)).unwrap()
+}
+
+#[test]
+fn kept_kitty_images_repaint_as_pixels_with_their_placements() {
+    let mut png = Vec::new();
+    let mut encoder = png::Encoder::new(&mut png, 1, 1);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.write_header().unwrap().write_image_data(&[10, 20, 30, 255]).unwrap();
+    let file = std::env::temp_dir().join(format!("hc-kitty-{}.rgb", std::process::id()));
+    std::fs::write(&file, [0, 255, 0]).unwrap();
+    let mut t = Terminal::new(20, 5, 1 << 20);
+    t.set_display(None, None, None, Some((10, 20)));
+    // Pixels, PNG, a file by path, and a placeholder (virtual) placement.
+    t.write(
+        format!(
+            "\x1b[2;3H\x1b_Ga=T,i=7,f=24,s=1,v=1,C=1,q=2;/wAA\x1b\\\
+             \x1b[3;1H\x1b_Ga=T,i=8,f=100,C=1,q=2;{}\x1b\\\
+             \x1b[4;1H\x1b_Ga=T,i=9,t=f,f=24,s=1,v=1,C=1,q=2;{}\x1b\\\
+             \x1b_Ga=T,i=10,f=24,s=1,v=1,U=1,c=2,r=1,q=2;AAD/\x1b\\",
+            b64(&png),
+            b64(file.to_string_lossy().as_bytes())
+        )
+        .as_bytes(),
+    );
+    std::fs::remove_file(&file).unwrap();
+    let wanted = [
+        "a=t,i=7,f=100,q=2,m=0;",
+        "\x1b[2;3H\x1b_Ga=p,i=7,",
+        "a=t,i=8,f=100,q=2,m=0;",
+        "a=t,i=9,f=100,q=2,m=0;",
+        "\x1b[4;1H\x1b_Ga=p,i=9,",
+        "a=t,i=10,f=100,q=2,m=0;",
+        "a=p,U=1,i=10,",
+        ",c=2,r=1,q=2\x1b\\",
+    ];
+    // A viewer painted from it keeps the same pixels, and repaints them for the next one.
+    let mut viewer = Terminal::new(20, 5, 1 << 20);
+    viewer.write(&t.paint(0));
+    for (id, rgba) in [(7, [255, 0, 0, 255]), (8, [10, 20, 30, 255]), (9, [0, 255, 0, 255]), (10, [0, 0, 255, 255])] {
+        assert_eq!(viewer.kitty_rgba(id), Some(rgba.to_vec()), "image {id}");
+    }
+    for paint in [t.paint(0), viewer.paint(0)] {
+        let paint = String::from_utf8_lossy(&paint).into_owned();
+        for want in wanted {
+            assert!(paint.contains(want), "{want:?} in {paint:?}");
+        }
+    }
+}
+
+#[test]
+fn an_image_partly_scrolled_off_repaints_what_is_still_on_screen() {
+    let mut t = Terminal::new(20, 5, 1 << 20);
+    t.set_display(None, None, None, Some((10, 20)));
+    // 1x40 pixels: two rows tall; then the screen scrolls one line.
+    t.write(format!("\x1b_Ga=T,i=11,f=24,s=1,v=40,C=1,q=2;{}\x1b\\\x1b[5;1H\n", b64(&[9; 120])).as_bytes());
+    let paint = String::from_utf8_lossy(&t.paint(0)).into_owned();
+    assert!(paint.contains("\x1b[1;1H\x1b_Ga=p,i=11,x=0,y=20,w=1,h=20,X=0,Y=0,"), "{paint:?}");
+}
+
+#[test]
+fn an_image_in_history_comes_back_at_its_line() {
+    let mut t = Terminal::new(20, 5, 1 << 20);
+    t.set_display(None, None, None, Some((10, 20)));
+    // A one-row image after "above", then enough lines to push both into history.
+    t.write(b"above\r\n\x1b_Ga=T,i=12,f=24,s=1,v=1,C=1,q=2;/wAA\x1b\\below\r\n");
+    for n in 0..10 {
+        t.write(format!("line {n}\r\n").as_bytes());
+    }
+    let paint = String::from_utf8_lossy(&t.paint(100)).into_owned();
+    let (image, below) = (paint.find("a=p,i=12,").expect(&paint), paint.find("below").expect(&paint));
+    assert!(paint.find("above").unwrap() < image && image < below, "placed between its lines: {paint:?}");
+    // The viewer keeps it in its own history, for the next viewer.
+    let mut viewer = Terminal::new(20, 5, 1 << 20);
+    viewer.set_display(None, None, None, Some((10, 20)));
+    viewer.write(paint.as_bytes());
+    assert_eq!(viewer.kitty_rgba(12), Some(vec![255, 0, 0, 255]));
+    assert!(String::from_utf8_lossy(&viewer.paint(100)).contains("a=p,i=12,"));
+}
